@@ -1,46 +1,79 @@
-import os
-import sys
-# DON'T CHANGE THIS !!!
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from flask import Flask, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
+from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
-from user import db
-from user import user_bp
-from casino import casino_bp
+import os
+from dotenv import load_dotenv
 
-app = Flask(__name__, static_folder=os.path.join(os.path.dirname(__file__), 'static'))
-app.config['SECRET_KEY'] = 'asdf#FGSgvasgf$5$WGT'
+load_dotenv()  # Загружаем переменные из .env
 
-# Настройка CORS для взаимодействия с фронтендом
-CORS(app)
-
-app.register_blueprint(user_bp, url_prefix='/api')
-app.register_blueprint(casino_bp, url_prefix='/api/casino')
-
-# uncomment if you need to use database
-app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'database', 'app.db')}"
+app = Flask(__name__, static_folder='static')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db.init_app(app)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default-secret-key')
+
+CORS(app)
+db = SQLAlchemy(app)
+
+# Модель Player
+class Player(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    telegram_id = db.Column(db.String(80), unique=True)
+    username = db.Column(db.String(80))
+    balance = db.Column(db.Integer, default=100)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'telegram_id': self.telegram_id,
+            'username': self.username,
+            'balance': self.balance
+        }
+
+# Создаем базу данных при первом запуске
 with app.app_context():
     db.create_all()
 
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
-def serve(path):
-    static_folder_path = app.static_folder
-    if static_folder_path is None:
-            return "Static folder not configured", 404
+# API для казино
+@app.route('/api/casino/player/<telegram_id>', methods=['GET'])
+def get_player(telegram_id):
+    player = Player.query.filter_by(telegram_id=telegram_id).first()
+    if not player:
+        player = Player(telegram_id=telegram_id, balance=100)
+        db.session.add(player)
+        db.session.commit()
+    return jsonify(player.to_dict())
 
-    if path != "" and os.path.exists(os.path.join(static_folder_path, path)):
-        return send_from_directory(static_folder_path, path)
+@app.route('/api/casino/play/<telegram_id>', methods=['POST'])
+def play_game(telegram_id):
+    player = Player.query.filter_by(telegram_id=telegram_id).first()
+    if not player:
+        return jsonify({'error': 'Player not found'}), 404
+    if player.balance < 10:
+        return jsonify({'error': 'Not enough coins'}), 400
+
+    player.balance -= 10
+    rand = random.random()
+    if rand < 0.4:
+        winnings = 0
+    elif rand < 0.7:
+        winnings = 20
+    elif rand < 0.9:
+        winnings = 50
     else:
-        index_path = os.path.join(static_folder_path, 'index.html')
-        if os.path.exists(index_path):
-            return send_from_directory(static_folder_path, 'index.html')
-        else:
-            return "index.html not found", 404
+        winnings = 100
 
+    player.balance += winnings
+    db.session.commit()
+
+    return jsonify({
+        'new_balance': player.balance,
+        'winnings': winnings
+    })
+
+# Статический фронтенд
+@app.route('/')
+def serve_index():
+    return send_from_directory('.', 'index.html')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)
